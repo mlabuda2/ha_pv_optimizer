@@ -111,6 +111,8 @@ Save and enable.
 Install [Bubble Card](https://github.com/Clooos/Bubble-Card) via HACS → Frontend.  
 Copy the YAML from `dashboards/bubble_card_example.yaml` into a manual card.  
 (Requires the `packages/pv_optimizer.yaml` template sensors.)
+
+![Bubble Card showing PV Optimizer toggle with Reserve SOC and Consumption sub-buttons](docs/images/bubble_card.png)
 ---
 ## Calibration
 ### Heat pump coefficient (`hp_coeff`)
@@ -136,4 +138,4 @@ increase by 5 % steps until it stops happening.
 | Polish RCE market price | Custom REST sensor | `sensor.rce_pse_cena` |
 ---
 ## License
-[Apache 2.0](LICENSE) — © 2025 Mateusz Labuda
+[Apache 2.0](LICENSE) — © 2026 Mateusz Labuda
