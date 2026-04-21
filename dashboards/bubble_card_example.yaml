@@ -1,0 +1,34 @@
+# ============================================================================
+# PV Optimizer — Bubble Card Dashboard Snippet
+# https://github.com/mlabuda2/ha_pv_optimizer
+#
+# Requires:
+#   - bubble-card (HACS → Frontend): https://github.com/Clooos/Bubble-Card
+#   - pv_optimizer.yaml package installed (provides template sensors)
+#
+# Add this card to your Lovelace dashboard via:
+#   Edit Dashboard → Add Card → Manual Card → paste YAML below
+# ============================================================================
+type: custom:bubble-card
+card_type: button
+entity: input_boolean.pv_optimizer_enabled
+name: PV Optimizer
+icon: mdi:solar-power
+show_state: false
+sub_button:
+  - entity: sensor.pv_optimizer_required_reserve_soc
+    icon: mdi:battery-lock
+    show_state: true
+    tap_action:
+      action: more-info
+  - entity: sensor.pv_optimizer_estimated_consumption_tomorrow
+    icon: mdi:home-lightning-bolt
+    show_state: true
+    tap_action:
+      action: more-info
+styles: |
+  .bubble-icon-container {
+    --bubble-icon-background-color:
+      {{ 'rgba(0,200,0,0.3)' if is_state('input_boolean.pv_optimizer_enabled','on')
+         else 'rgba(200,0,0,0.3)' }};
+  }

@@ -1,0 +1,389 @@
+blueprint:
+  name: "PV Optimizer — Smart Battery Controller"
+  description: >
+    **PV Smart Battery Optimizer — Step 2 of 2**
+    Dynamically controls your inverter's work mode (sell / self-use) based on:
+    - **Spot electricity price** — only sell when price is positive (configurable threshold)
+    - **Time-of-use sell windows** — morning peak and evening peak (configurable hours)
+    - **Dynamic battery reserve SOC** — computed from tomorrow's estimated consumption
+      vs PV forecast; never sells below what is needed overnight
+    - **Master on/off switch** — instantly reverts to safe mode when turned off
+    **Reserve SOC formula**:
+    ```
+    reserve = inverter_floor + (gap_kWh / battery_capacity × 100) + safety_buffer
+    ```
+    where `gap_kWh = max(0, tomorrow_consumption − tomorrow_pv_forecast)`.
+    **Consumption model** (linear heat-pump model, calibrated from real Daikin data):
+    ```
+    consumption = base_load + hp_coeff × max(0, balance_point − temp_effective)
+    ```
+    Set `hp_coeff = 0` if you have no heat pump.
+    Triggers every **15 minutes** (via time_pattern) plus on every price update
+    and master-switch state change for instant response.
+    **Requires**: Blueprint 1 (temperature fetch) installed and running.
+    See the full README for setup instructions and entity prerequisites.
+  domain: automation
+  source_url: https://github.com/mlabuda2/ha_pv_optimizer/blob/main/blueprints/automation/pv_optimizer/pv_optimizer_controller.yaml
+  input:
+    # ── Hardware / Integration entities ───────────────────────────────────────
+    work_mode_select:
+      name: Inverter Work Mode (select entity)
+      description: >
+        The `select` entity that controls your inverter's operating mode.
+        For Solarman/Deye: `select.solarman_work_mode` or similar.
+        Must have at least two options: one for "sell to grid" and one for "safe/self-use".
+      selector:
+        entity:
+          domain: select
+    battery_soc_sensor:
+      name: Battery State of Charge Sensor
+      description: >
+        Sensor reporting current battery SOC in percent (0–100).
+        Example: `sensor.solarman_battery`
+      selector:
+        entity:
+          domain: sensor
+          device_class: battery
+    price_sensor:
+      name: Electricity Spot Price Sensor
+      description: >
+        Sensor reporting current grid electricity price (any unit, e.g. PLN/MWh or EUR/MWh).
+        Positive = selling earns money. Negative = grid is paying you to consume.
+        Example: `sensor.rce_pse_cena` (Polish RCE market)
+      selector:
+        entity:
+          domain: sensor
+    pv_forecast_tomorrow:
+      name: Tomorrow's PV Forecast Sensor (kWh)
+      description: >
+        Sensor reporting tomorrow's total PV energy forecast in kWh.
+        Example: `sensor.solcast_pv_forecast_forecast_tomorrow`
+      selector:
+        entity:
+          domain: sensor
+    battery_capacity_sensor:
+      name: Battery Capacity Sensor (kWh)
+      description: >
+        Sensor reporting total usable battery capacity in kWh.
+        Example: `sensor.solarman_battery_capacity` (≈ 15.9 kWh for a 16 kWh bank)
+      selector:
+        entity:
+          domain: sensor
+    inverter_floor_number:
+      name: Inverter Minimum SOC (number entity)
+      description: >
+        The `number` entity representing the inverter's hardware discharge floor (%).
+        The inverter *never* drains the battery below this value.
+        Example: `number.solarman_battery_restart_soc` (typically 20 % in summer, 30–40 % in winter).
+        Change it on your inverter and the optimizer picks it up automatically.
+      selector:
+        entity:
+          domain: number
+    temperature_helper:
+      name: Temperature Storage Helper (same as Blueprint 1)
+      description: >
+        The same `input_number` used by the temperature-fetch blueprint.
+        Holds tomorrow's weighted effective temperature in °C.
+      selector:
+        entity:
+          domain: input_number
+    master_switch:
+      name: Master On/Off Switch
+      description: >
+        An `input_boolean` that enables / disables the optimizer.
+        Turning it OFF immediately reverts the inverter to the safe mode
+        and sends a push notification.
+        Example: `input_boolean.pv_optimizer_aktywny`
+      selector:
+        entity:
+          domain: input_boolean
+    # ── Inverter mode option names ─────────────────────────────────────────────
+    sell_option:
+      name: Inverter "Sell to Grid" Option Name
+      description: >
+        The exact string used by your inverter's work-mode select entity for
+        grid-export / feed-in mode.
+        Solarman/Deye default: `Export First`
+      default: "Export First"
+      selector:
+        text:
+    safe_option:
+      name: Inverter "Safe / Self-Use" Option Name
+      description: >
+        The exact string used by your inverter's work-mode select entity for
+        the safe mode (no export, battery charges from PV / grid).
+        Solarman/Deye default: `Zero Export To Load`
+      default: "Zero Export To Load"
+      selector:
+        text:
+    # ── Sell conditions ────────────────────────────────────────────────────────
+    min_sell_price:
+      name: Minimum Sell Price Threshold
+      description: >
+        Only switch to sell mode when the spot price is *above* this value
+        (same unit as your price sensor, e.g. PLN/MWh or EUR/MWh).
+        Default 0 — sell whenever price is positive.
+        Raise this (e.g. 50) to avoid selling at marginally positive prices.
+      default: 0
+      selector:
+        number:
+          min: -500
+          max: 2000
+          step: 1
+    morning_sell_start_hour:
+      name: Morning Sell Window — Start Hour
+      description: Hour (0–23) when the morning sell window opens. Default 7 (= 07:00).
+      default: 7
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+          mode: box
+    morning_sell_end_hour:
+      name: Morning Sell Window — End Hour
+      description: >
+        Hour (0–23) when the morning sell window closes (exclusive).
+        Default 10 (= window is 07:00–10:00).
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+          mode: box
+    evening_sell_start_hour:
+      name: Evening Sell Window — Start Hour
+      description: Hour (0–23) when the evening sell window opens. Default 19 (= 19:00).
+      default: 19
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+          mode: box
+    evening_sell_end_hour:
+      name: Evening Sell Window — End Hour
+      description: >
+        Hour (0–23) when the evening sell window closes (exclusive).
+        Default 23 (= window is 19:00–23:00).
+      default: 23
+      selector:
+        number:
+          min: 0
+          max: 23
+          step: 1
+          mode: box
+    # ── Consumption model parameters ───────────────────────────────────────────
+    base_load:
+      name: Base Daily Household Load (kWh)
+      description: >
+        Non-weather-dependent daily consumption: always-on appliances, lighting,
+        standby, constant DHW heating, etc.
+        Default 6.5 kWh (= 4 kWh appliances + 2.5 kWh constant DHW).
+        Measure your baseline on warm days (>20 °C) when the heat pump is off.
+      default: 6.5
+      selector:
+        number:
+          min: 0.0
+          max: 30.0
+          step: 0.1
+          unit_of_measurement: "kWh"
+    hp_coeff:
+      name: Heat Pump Heating Coefficient (kWh per °C below balance point)
+      description: >
+        How many extra kWh your heat pump / electric heater consumes per °C
+        below the balance point. Default 0.7 (calibrated from Daikin Altherma
+        EHVH08S23EJ9W in weather-dependent mode).
+        **Set to 0 if you have no heat pump or electric heating.**
+        Increase to 0.8–1.0 in winter if battery runs dry too often.
+      default: 0.7
+      selector:
+        number:
+          min: 0.0
+          max: 3.0
+          step: 0.05
+          unit_of_measurement: "kWh/°C"
+    balance_point:
+      name: Heating Balance Point (°C)
+      description: >
+        Outdoor temperature at which heating demand becomes zero.
+        Below this temperature the heat pump starts consuming energy.
+        Default 18 °C (Daikin weatherDependent mode). Typical range 15–20 °C.
+      default: 18
+      selector:
+        number:
+          min: 5
+          max: 25
+          step: 0.5
+          unit_of_measurement: "°C"
+    # ── SOC management ─────────────────────────────────────────────────────────
+    safety_buffer_soc:
+      name: Safety Buffer SOC (%)
+      description: >
+        Extra SOC percentage added on top of the calculated reserve to account
+        for forecast errors, unexpected consumption, etc.
+        Default 10 %. Increase to 15–20 % if you find the battery runs dry.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 1
+          unit_of_measurement: "%"
+    min_soc_floor:
+      name: Minimum SOC Before Selling (%)
+      description: >
+        Hard floor: never switch to sell mode below this SOC regardless of
+        forecast or price. Should be >= your inverter's hardware discharge floor.
+        Default 20 %.
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 80
+          step: 1
+          unit_of_measurement: "%"
+    # ── Notifications ──────────────────────────────────────────────────────────
+    notify_service:
+      name: Notification Service Name
+      description: >
+        The suffix of your notify service, e.g. `mobile_app_iphone_yourname`
+        for `notify.mobile_app_iphone_yourname`.
+        Leave blank to disable notifications.
+      default: ""
+      selector:
+        text:
+# ── Triggers ──────────────────────────────────────────────────────────────────
+trigger:
+  - platform: state
+    id: price_update
+    entity_id: !input price_sensor
+  - platform: time_pattern
+    id: poll_15min
+    minutes: "/15"
+  - platform: state
+    id: master_switch_change
+    entity_id: !input master_switch
+# ── Action ────────────────────────────────────────────────────────────────────
+action:
+  # ── 0. Capture all blueprint inputs as template-accessible variables ─────────
+  - variables:
+      _work_mode_id:   !input work_mode_select
+      _soc_id:         !input battery_soc_sensor
+      _price_id:       !input price_sensor
+      _pv_tomorrow_id: !input pv_forecast_tomorrow
+      _capacity_id:    !input battery_capacity_sensor
+      _floor_id:       !input inverter_floor_number
+      _temp_id:        !input temperature_helper
+      _switch_id:      !input master_switch
+      _sell_opt:       !input sell_option
+      _safe_opt:       !input safe_option
+      _notify_svc:     !input notify_service
+      _min_price:      !input min_sell_price
+      _ms_start:       !input morning_sell_start_hour
+      _ms_end:         !input morning_sell_end_hour
+      _es_start:       !input evening_sell_start_hour
+      _es_end:         !input evening_sell_end_hour
+      _base_load:      !input base_load
+      _hp_coeff:       !input hp_coeff
+      _balance_pt:     !input balance_point
+      _sbuf:           !input safety_buffer_soc
+      _min_soc:        !input min_soc_floor
+  # ── 1. Compute all derived values ────────────────────────────────────────────
+  - variables:
+      optimizer_active: "{{ is_state(_switch_id, 'on') }}"
+      current_price:    "{{ states(_price_id)      | float(0) }}"
+      battery_soc:      "{{ states(_soc_id)         | float(0) }}"
+      current_mode:     "{{ states(_work_mode_id) }}"
+      tomorrow_pv:      "{{ states(_pv_tomorrow_id)  | float(0) | round(1) }}"
+      battery_cap:      "{{ states(_capacity_id)     | float(15.9) }}"
+      inverter_floor:   "{{ states(_floor_id)        | float(20) }}"
+      temp_effective:   "{{ states(_temp_id)         | float(10) }}"
+      # Consumption estimate from calibrated linear heat-pump model
+      tomorrow_consumption: >
+        {% set heating_demand = [_balance_pt - temp_effective, 0] | max %}
+        {{ (_base_load + _hp_coeff * heating_demand) | round(1) }}
+      # Dynamic reserve SOC (clamped 0–95 %)
+      gap_kwh: "{{ [tomorrow_consumption - tomorrow_pv, 0] | max }}"
+      reserve_from_gap: "{{ inverter_floor + (gap_kwh / battery_cap * 100) + _sbuf }}"
+      reserve_soc: "{{ [[reserve_from_gap, _min_soc] | max, 95] | min | round(0) | int }}"
+      # Sell window check
+      in_sell_window: >
+        {% set h = now().hour %}
+        {{ (_ms_start | int <= h < _ms_end | int) or (_es_start | int <= h < _es_end | int) }}
+  # ── 2. Decision tree ─────────────────────────────────────────────────────────
+  - choose:
+      # ── 🔴 DISABLED — master switch turned off → safe mode immediately ───────
+      - conditions:
+          - condition: template
+            value_template: "{{ not optimizer_active }}"
+        sequence:
+          - condition: template          # skip if inverter is already in safe mode
+            value_template: "{{ current_mode != _safe_opt }}"
+          - action: select.select_option
+            target:
+              entity_id: !input work_mode_select
+            data:
+              option: "{{ _safe_opt }}"
+          - condition: template
+            value_template: "{{ _notify_svc != '' }}"
+          - action: "notify.{{ _notify_svc }}"
+            data:
+              title: "🔴 PV Optimizer: DISABLED"
+              message: >
+                Optimizer turned off manually.
+                Inverter set to: {{ _safe_opt }}.
+                Battery SOC: {{ battery_soc | round(0) }}%
+      # ── ☀️  SELL — in window, price above threshold, battery above reserve ────
+      - conditions:
+          - condition: template
+            value_template: >
+              {{ optimizer_active
+                 and in_sell_window
+                 and current_price > (_min_price | float(0))
+                 and battery_soc >= reserve_soc }}
+        sequence:
+          - condition: template          # skip if already selling
+            value_template: "{{ current_mode != _sell_opt }}"
+          - action: select.select_option
+            target:
+              entity_id: !input work_mode_select
+            data:
+              option: "{{ _sell_opt }}"
+          - condition: template
+            value_template: "{{ _notify_svc != '' }}"
+          - action: "notify.{{ _notify_svc }}"
+            data:
+              title: "☀️ PV: SELLING to grid"
+              message: >
+                Price: {{ current_price | round(0) }} |
+                SOC: {{ battery_soc | round(0) }}% ≥ reserve {{ reserve_soc }}% |
+                PV tomorrow: {{ tomorrow_pv }} kWh vs est. {{ tomorrow_consumption }} kWh
+    # ── 🔋 CHARGE/SELF-USE — outside window, price too low, or battery below reserve
+    default:
+      - condition: template              # skip if already in safe mode
+        value_template: "{{ current_mode != _safe_opt }}"
+      - action: select.select_option
+        target:
+          entity_id: !input work_mode_select
+        data:
+          option: "{{ _safe_opt }}"
+      - condition: template
+        value_template: "{{ _notify_svc != '' }}"
+      - action: "notify.{{ _notify_svc }}"
+        data:
+          title: "🔋 PV: Charge / Self-use"
+          message: >
+            {% if not optimizer_active %}
+            Optimizer is disabled.
+            {% elif not in_sell_window %}
+            Outside sell windows ({{ _ms_start }}–{{ _ms_end }}h / {{ _es_start }}–{{ _es_end }}h).
+            {% elif current_price <= (_min_price | float(0)) %}
+            Price {{ current_price | round(0) }} below threshold {{ _min_price }} — charging battery.
+            {% else %}
+            SOC {{ battery_soc | round(0) }}% < reserve {{ reserve_soc }}% — protecting battery.
+            {% endif %}
+            PV tomorrow: {{ tomorrow_pv }} kWh / est. consumption: {{ tomorrow_consumption }} kWh
+mode: restart
+max_exceeded: silent

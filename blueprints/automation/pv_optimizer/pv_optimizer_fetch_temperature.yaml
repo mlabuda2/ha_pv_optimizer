@@ -1,0 +1,109 @@
+blueprint:
+  name: "PV Optimizer — Fetch Tomorrow's Temperature"
+  description: >
+    **PV Smart Battery Optimizer — Step 1 of 2**
+    Runs daily at 00:30 and on Home Assistant startup.
+    Calls `weather.get_forecasts` to retrieve tomorrow's daily forecast,
+    computes a weighted *effective* temperature (default: 75 % nighttime low +
+    25 % daytime high), and stores the result in an `input_number` helper.
+    The effective temperature is consumed by the **PV Optimizer Controller**
+    blueprint to estimate tomorrow's heat-pump / household energy consumption,
+    which drives the dynamic battery-reserve SOC calculation.
+    **Weighting rationale**: heat pumps (Daikin Altherma, etc.) run mostly
+    between 00:00–08:00 when outdoor temps are lowest. Weighting low × 0.75
+    and high × 0.25 better reflects actual heating demand than a simple average.
+    Users without a heat pump can set both weights to 0.5.
+    Tested with **PirateWeather**. Any HA weather integration that supports
+    `weather.get_forecasts` with `type: daily` and provides `templow` +
+    `temperature` fields should work.
+  domain: automation
+  source_url: https://github.com/mlabuda2/ha_pv_optimizer/blob/main/blueprints/automation/pv_optimizer/pv_optimizer_fetch_temperature.yaml
+  input:
+    weather_entity:
+      name: Weather Entity
+      description: >
+        Weather integration entity providing daily forecasts.
+        Verify it works via Developer Tools → Services → weather.get_forecasts.
+      default: weather.pirateweather
+      selector:
+        entity:
+          domain: weather
+    temperature_helper:
+      name: Temperature Storage Helper
+      description: >
+        An `input_number` helper where tomorrow's effective temperature (°C)
+        will be stored. Create it first via Settings → Helpers → Add Helper →
+        Number (range −30 to 40, step 0.1). Use the *same* entity in the
+        Controller blueprint.
+      selector:
+        entity:
+          domain: input_number
+    low_weight:
+      name: Nighttime Low Temperature Weight
+      description: >
+        Weight for the forecast *low* temperature (0.0–1.0).
+        Default 0.75 for heat-pump households (HP runs mostly overnight).
+        Set to 0.5 for a simple daily average when there is no heat pump.
+      default: 0.75
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.05
+    high_weight:
+      name: Daytime High Temperature Weight
+      description: >
+        Weight for the forecast *high* temperature (0.0–1.0).
+        Default 0.25. low_weight + high_weight should sum to 1.0.
+      default: 0.25
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.05
+    forecast_day_index:
+      name: Forecast Day Index
+      description: >
+        Which day in the forecast list to read. 0 = today, 1 = tomorrow
+        (default). The automation triggers at 00:30, so index 1 is always
+        the upcoming calendar day.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 6
+          step: 1
+          mode: box
+# ── Triggers ──────────────────────────────────────────────────────────────────
+trigger:
+  - platform: time
+    at: "00:30:00"
+  - platform: homeassistant
+    event: start
+# ── Action ────────────────────────────────────────────────────────────────────
+action:
+  # Capture blueprint inputs as Jinja2-accessible variables
+  - variables:
+      _weather_id: !input weather_entity
+      _lw: !input low_weight
+      _hw: !input high_weight
+      _idx: !input forecast_day_index
+  # Fetch the daily forecast from the weather integration
+  - action: weather.get_forecasts
+    target:
+      entity_id: !input weather_entity
+    data:
+      type: daily
+    response_variable: forecast_response
+  # Compute weighted effective temperature and persist it
+  - action: input_number.set_value
+    target:
+      entity_id: !input temperature_helper
+    data:
+      value: >
+        {% set fc    = forecast_response[_weather_id]['forecast'][_idx | int(1)] %}
+        {% set tlow  = fc['templow']    | float(5)  %}
+        {% set thigh = fc['temperature'] | float(15) %}
+        {{ (_lw * tlow + _hw * thigh) | round(1) }}
+mode: single
+max_exceeded: silent

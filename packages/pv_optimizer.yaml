@@ -1,0 +1,91 @@
+# ============================================================================
+# PV Smart Battery Optimizer — HA Package
+# https://github.com/mlabuda2/ha_pv_optimizer
+#
+# INSTALLATION
+# ─────────────
+# 1. Copy this file to your HA config/packages/ directory.
+# 2. Add `packages: !include_dir_named packages` to your configuration.yaml
+#    (if not already there).
+# 3. Restart Home Assistant.
+# 4. Import and configure the two blueprints (see README).
+#
+# This package creates:
+#   • 4 input helpers  (temperature store, safety buffer, min SOC floor, master switch)
+#   • 2 template sensors (consumption estimate, required reserve SOC)
+#     — useful for dashboards; the blueprint controller computes the same values
+#       inline and does NOT depend on these sensors.
+# ============================================================================
+# ── Input helpers ────────────────────────────────────────────────────────────
+input_boolean:
+  pv_optimizer_enabled:
+    name: "PV Optimizer — Enabled"
+    icon: mdi:solar-power
+input_number:
+  pv_optimizer_temperature_tomorrow:
+    name: "PV Optimizer — Tomorrow's Effective Temperature"
+    icon: mdi:thermometer
+    min: -30
+    max: 40
+    step: 0.1
+    unit_of_measurement: "°C"
+    mode: box
+  pv_optimizer_safety_buffer_soc:
+    name: "PV Optimizer — Safety Buffer SOC"
+    icon: mdi:shield-battery
+    min: 0
+    max: 30
+    step: 1
+    unit_of_measurement: "%"
+    initial: 10
+  pv_optimizer_min_soc_floor:
+    name: "PV Optimizer — Minimum SOC Before Selling"
+    icon: mdi:battery-alert
+    min: 0
+    max: 80
+    step: 1
+    unit_of_measurement: "%"
+    initial: 20
+# ── Template sensors (optional — for dashboards / history) ───────────────────
+#
+# ⚠️  EDIT the two entity IDs marked <<<EDIT>>> below to match your setup.
+#     Everything else uses the helpers created above.
+#
+# Tested with:
+#   pv_forecast_entity  →  sensor.solcast_pv_forecast_forecast_tomorrow  (Solcast)
+#   battery_capacity    →  sensor.solarman_battery_capacity               (Solarman)
+#   inverter_floor      →  number.solarman_battery_restart_soc            (Solarman)
+#   battery_soc         →  sensor.solarman_battery                        (Solarman)
+template:
+  - sensor:
+      - name: "PV Optimizer — Estimated Consumption Tomorrow"
+        unique_id: pv_optimizer_estimated_consumption_tomorrow
+        unit_of_measurement: "kWh"
+        icon: mdi:home-lightning-bolt
+        state_class: measurement
+        state: >
+          {# ── TUNE THESE CONSTANTS TO YOUR HOUSEHOLD ── #}
+          {% set base_load    = 6.5   %}  {# kWh/day non-HP baseline              #}
+          {% set hp_coeff     = 0.7   %}  {# kWh per °C below balance (0 = no HP) #}
+          {% set balance_pt   = 18.0  %}  {# °C balance point for your heat pump   #}
+          {# ─────────────────────────────────────────── #}
+          {% set temp = states('input_number.pv_optimizer_temperature_tomorrow') | float(10) %}
+          {% set heating_demand = [balance_pt - temp, 0] | max %}
+          {{ (base_load + hp_coeff * heating_demand) | round(1) }}
+      - name: "PV Optimizer — Required Reserve SOC"
+        unique_id: pv_optimizer_required_reserve_soc
+        unit_of_measurement: "%"
+        icon: mdi:battery-lock
+        state_class: measurement
+        state: >
+          {# ── EDIT entity IDs to match your installation ── #}
+          {% set pv_tomorrow  = states('sensor.solcast_pv_forecast_forecast_tomorrow') | float(0) %}  {# <<<EDIT #}
+          {% set battery_cap  = states('sensor.solarman_battery_capacity')             | float(15.9) %}  {# <<<EDIT #}
+          {% set inv_floor    = states('number.solarman_battery_restart_soc')          | float(20) %}   {# <<<EDIT #}
+          {# ─────────────────────────────────────────────── #}
+          {% set safety_buf   = states('input_number.pv_optimizer_safety_buffer_soc') | float(10) %}
+          {% set min_soc      = states('input_number.pv_optimizer_min_soc_floor')     | float(20) %}
+          {% set tomorrow_con = states('sensor.pv_optimizer_estimated_consumption_tomorrow') | float(10) %}
+          {% set gap_kwh      = [tomorrow_con - pv_tomorrow, 0] | max %}
+          {% set reserve      = inv_floor + (gap_kwh / battery_cap * 100) + safety_buf %}
+          {{ [[reserve, min_soc] | max, 95] | min | round(0) | int }}
