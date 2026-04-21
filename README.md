@@ -80,7 +80,9 @@ Click the buttons below to import directly:
 <a href="https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fmlabuda2%2Fha_pv_optimizer%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fpv_optimizer%2Fpv_optimizer_controller.yaml">
   <img src="https://my.home-assistant.io/badges/blueprint_import.svg" alt="Import Blueprint" width="250">
 </a>
+
 ---
+
 ## Setup
 ### Step 1 — Create helpers manually
 Go to **Settings → Helpers** and create:
