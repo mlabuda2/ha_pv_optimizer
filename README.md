@@ -69,10 +69,17 @@ temp_effective    = 0.75 × forecast_low + 0.25 × forecast_high
 3. Download both blueprints
 ### Option B — Manual blueprint import
 Click the buttons below to import directly:
-| Blueprint | Import |
-|---|---|
-| Fetch Temperature | [![Import](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fmlabuda2%2Fha_pv_optimizer%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fpv_optimizer%2Fpv_optimizer_fetch_temperature.yaml) |
-| Smart Controller | [![Import](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fmlabuda2%2Fha_pv_optimizer%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fpv_optimizer%2Fpv_optimizer_controller.yaml) |
+**Blueprint 1 — Fetch Tomorrow's Temperature**
+
+<a href="https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fmlabuda2%2Fha_pv_optimizer%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fpv_optimizer%2Fpv_optimizer_fetch_temperature.yaml">
+  <img src="https://my.home-assistant.io/badges/blueprint_import.svg" alt="Import Blueprint" width="250">
+</a>
+
+**Blueprint 2 — Smart Battery Controller**
+
+<a href="https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fmlabuda2%2Fha_pv_optimizer%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fpv_optimizer%2Fpv_optimizer_controller.yaml">
+  <img src="https://my.home-assistant.io/badges/blueprint_import.svg" alt="Import Blueprint" width="250">
+</a>
 ---
 ## Setup
 ### Step 1 — Create helpers manually
