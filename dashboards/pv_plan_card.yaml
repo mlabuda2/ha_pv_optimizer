@@ -1,0 +1,98 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# PV Optimizer — "Next Sell Window Plan" dashboard card
+# ──────────────────────────────────────────────────────────────────────────────
+# Add this markdown card below your PV Optimizer toggle button.
+# It shows a live forecast of what the optimizer will do in the next sell window:
+#   • Which window is next (morning 07–10 or evening 19–23) and time remaining
+#   • Expected prices during that window (avg / min / max, profitable intervals)
+#   • Current battery SOC vs required reserve & sell-entry threshold
+#   • Colour-coded predicted action: 🟢 SPRZEDAŻ / 🟡 Ładowanie / 🔵 / 🔴
+#
+# Requires: sensor.rce_pse_cena (with .prices attribute list),
+#           sensor.pv_optimizer_wymagane_rezerwy_soc,
+#           sensor.solarman_battery,
+#           input_boolean.pv_optimizer_aktywny
+# ──────────────────────────────────────────────────────────────────────────────
+
+type: markdown
+content: >
+  {% set ms_start = 7 %}{% set ms_end = 10 %}
+  {% set es_start = 19 %}{% set es_end = 23 %}
+  {% set h = now().hour %}
+  {% set batt_soc = states('sensor.solarman_battery') | float(0) | round(0) | int %}
+  {% set reserve_soc = states('sensor.pv_optimizer_wymagane_rezerwy_soc') | float(35) | round(0) | int %}
+  {% set sell_threshold = reserve_soc + 5 %}
+  {% set optimizer_on = is_state('input_boolean.pv_optimizer_aktywny', 'on') %}
+
+  {% set in_morning = ms_start <= h < ms_end %}
+  {% set in_evening = es_start <= h < es_end %}
+  {% set in_window  = in_morning or in_evening %}
+
+  {% set win = namespace(label='', start=0, end=0, tomorrow=false) %}
+  {% if in_morning %}
+    {% set win.label = '🌤 Poranne' %}{% set win.start = ms_start %}{% set win.end = ms_end %}
+  {% elif in_evening %}
+    {% set win.label = '🌆 Wieczorne' %}{% set win.start = es_start %}{% set win.end = es_end %}
+  {% elif h < ms_start %}
+    {% set win.label = '🌤 Poranne' %}{% set win.start = ms_start %}{% set win.end = ms_end %}
+  {% elif h < es_start %}
+    {% set win.label = '🌆 Wieczorne' %}{% set win.start = es_start %}{% set win.end = es_end %}
+  {% else %}
+    {% set win.label = '🌤 Poranne (jutro)' %}{% set win.start = ms_start %}{% set win.end = ms_end %}
+    {% set win.tomorrow = true %}
+  {% endif %}
+
+  {% set ref_h    = win.end if in_window else win.start %}
+  {% set mins_to  = (ref_h - h) * 60 - now().minute %}
+  {% set hours_to = (mins_to // 60) | int %}
+  {% set min_to   = (mins_to % 60)  | int %}
+
+  {% set prices = state_attr('sensor.rce_pse_cena', 'prices') %}
+  {% set ns = namespace(total=0.0, cnt=0, min_p=9999.0, max_p=-9999.0, above_thresh=0) %}
+  {% if prices %}
+    {% for p in prices %}
+      {% set ph = p.period[:2] | int %}
+      {% if win.start <= ph < win.end %}
+        {% set ns.total = ns.total + p.rce_pln %}
+        {% set ns.cnt   = ns.cnt + 1 %}
+        {% if p.rce_pln < ns.min_p %}{% set ns.min_p = p.rce_pln %}{% endif %}
+        {% if p.rce_pln > ns.max_p %}{% set ns.max_p = p.rce_pln %}{% endif %}
+        {% if p.rce_pln > 0 %}{% set ns.above_thresh = ns.above_thresh + 1 %}{% endif %}
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+  {% set avg = (ns.total / ns.cnt) | round(0) | int if ns.cnt > 0 else 0 %}
+
+  ## ☀️ Plan — Następne okno sprzedaży
+
+  **Okno:** {{ win.label }} &nbsp; `{{ '%02d:00' | format(win.start) }}–{{ '%02d:00' | format(win.end) }}`
+
+  {% if in_window %}
+  ⏱ **AKTYWNE** — kończy się o `{{ '%02d:00' | format(win.end) }}` ({{ min_to }} min)
+  {% elif win.tomorrow %}
+  ⏱ Jutro o `{{ '%02d:00' | format(win.start) }}`
+  {% else %}
+  ⏱ Za {% if hours_to > 0 %}{{ hours_to }}h {% endif %}{{ min_to }} min
+  {% endif %}
+
+  ---
+
+  📊 **Ceny w oknie** (`{{ '%02d:00' | format(win.start) }}`–`{{ '%02d:00' | format(win.end) }}`):
+  {% if ns.cnt > 0 %}
+  śr. **{{ avg }} PLN/MWh** &nbsp;·&nbsp; min {{ ns.min_p | round(0) | int }} &nbsp;·&nbsp; max {{ ns.max_p | round(0) | int }}
+  ✅ Opłacalnych: **{{ ns.above_thresh }}/{{ ns.cnt }}** przedziałów
+  {% else %}
+  ⚠️ Brak danych cenowych
+  {% endif %}
+
+  🔋 SOC: **{{ batt_soc }}%** &nbsp;·&nbsp; rezerwa: {{ reserve_soc }}% &nbsp;·&nbsp; próg wejścia: {{ sell_threshold }}%
+
+  ---
+
+  {% if not optimizer_on %}🔴 **WYŁĄCZONY** — tryb bezpieczny
+  {% elif ns.cnt == 0 %}⚠️ **Brak danych cenowych**
+  {% elif avg <= 0 %}🔵 **Ładowanie** — ceny ujemne ({{ avg }} PLN/MWh)
+  {% elif batt_soc < sell_threshold %}🟡 **Ładowanie** — SOC {{ batt_soc }}% < próg {{ sell_threshold }}%
+  {% else %}🟢 **SPRZEDAŻ do sieci** — śr. {{ avg }} PLN/MWh
+  {% endif %}
+

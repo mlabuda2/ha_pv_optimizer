@@ -8,6 +8,8 @@ blueprint:
     - **Dynamic battery reserve SOC** — computed from tomorrow's estimated consumption
       vs PV forecast; never sells below what is needed overnight
     - **Master on/off switch** — instantly reverts to safe mode when turned off
+    - **TOU programme SOC sync** — writes the computed reserve directly to the inverter's
+      Time-of-Use programme SOC registers so the hardware floor always matches HA logic
     **Reserve SOC formula**:
     ```
     reserve = inverter_floor + (gap_kWh / battery_capacity × 100) + safety_buffer
@@ -223,8 +225,8 @@ blueprint:
       description: >
         Extra SOC percentage added on top of the calculated reserve to account
         for forecast errors, unexpected consumption, etc.
-        Default 10 %. Increase to 15–20 % if you find the battery runs dry.
-      default: 10
+        Default 15 %. Increase to 20 % in winter if you find the battery runs dry.
+      default: 15
       selector:
         number:
           min: 0
@@ -244,6 +246,53 @@ blueprint:
           max: 80
           step: 1
           unit_of_measurement: "%"
+    sell_hysteresis_soc:
+      name: Sell Entry Hysteresis SOC (%)
+      description: >
+        Extra SOC buffer required to *enter* sell mode on top of `reserve_soc`.
+        Once selling, the mode stays active until the battery reaches `reserve_soc`
+        (no extra buffer needed to *continue* selling — only to *start*).
+        Default 5 % — the battery must be at `reserve_soc + 5 %` before selling begins,
+        preventing rapid on/off toggling when SOC is hovering near the reserve threshold.
+        Set to 0 to disable hysteresis (matches original behaviour).
+      default: 5
+      selector:
+        number:
+          min: 0
+          max: 20
+          step: 1
+          unit_of_measurement: "%"
+    # ── TOU programme SOC sync ──────────────────────────────────────────────────
+    morning_sell_program_soc:
+      name: Morning Sell Window — TOU Programme SOC Entity (optional)
+      description: >
+        The `number` entity for the Time-of-Use programme SOC floor that covers
+        the morning sell window.
+        **Deye / Solarman example**: if your Programme 2 starts at 07:00 (matching
+        `morning_sell_start_hour`), set this to `number.solarman_program_2_soc`.
+        The optimizer writes `reserve_soc` here on every run so the inverter's own
+        hardware SOC floor always matches the HA-calculated reserve.
+        Without this, the inverter may export battery energy past the HA reserve
+        because its internal floor (e.g. 20 %) is lower than the computed reserve
+        (e.g. 30 %).
+        **Leave blank to skip** TOU programme sync for the morning window.
+      default: ""
+      selector:
+        entity:
+          domain: number
+    evening_sell_program_soc:
+      name: Evening Sell Window — TOU Programme SOC Entity (optional)
+      description: >
+        The `number` entity for the Time-of-Use programme SOC floor that covers
+        the evening sell window.
+        **Deye / Solarman example**: if your Programme 5 starts at 19:00 (matching
+        `evening_sell_start_hour`), set this to `number.solarman_program_5_soc`.
+        The optimizer writes `reserve_soc` here on every run.
+        **Leave blank to skip** TOU programme sync for the evening window.
+      default: ""
+      selector:
+        entity:
+          domain: number
     # ── Notifications ──────────────────────────────────────────────────────────
     notify_service:
       name: Notification Service Name
@@ -290,6 +339,9 @@ action:
       _balance_pt:     !input balance_point
       _sbuf:           !input safety_buffer_soc
       _min_soc:        !input min_soc_floor
+      _hysteresis:     !input sell_hysteresis_soc
+      _morning_prog_soc: !input morning_sell_program_soc
+      _evening_prog_soc: !input evening_sell_program_soc
   # ── 1. Compute all derived values ────────────────────────────────────────────
   - variables:
       optimizer_active: "{{ is_state(_switch_id, 'on') }}"
@@ -308,10 +360,42 @@ action:
       gap_kwh: "{{ [tomorrow_consumption - tomorrow_pv, 0] | max }}"
       reserve_from_gap: "{{ inverter_floor + (gap_kwh / battery_cap * 100) + _sbuf }}"
       reserve_soc: "{{ [[reserve_from_gap, _min_soc] | max, 95] | min | round(0) | int }}"
+      # Sell entry threshold with hysteresis: requires reserve_soc + hysteresis to START selling,
+      # but only reserve_soc to CONTINUE selling (avoids on/off toggling near the reserve floor)
+      sell_soc_threshold: "{{ reserve_soc + (0 if current_mode == _sell_opt else _hysteresis | int(5)) }}"
       # Sell window check
       in_sell_window: >
         {% set h = now().hour %}
         {{ (_ms_start | int <= h < _ms_end | int) or (_es_start | int <= h < _es_end | int) }}
+      # TOU programme SOC target:
+      # - reserve_soc  when all sell conditions are met (optimizer on, in window, price OK, battery OK)
+      # - inverter_floor  in all other cases (price too low, battery too low, outside window, disabled)
+      tou_soc: >
+        {{ reserve_soc if (optimizer_active
+             and in_sell_window
+             and current_price > (_min_price | float(0))
+             and battery_soc >= sell_soc_threshold)
+           else inverter_floor | int }}
+  # ── 1b. Sync TOU programme SOC floors → inverter hardware reserve ────────────
+  # reserve_soc during sell window hours; inverter_floor (default 20%) outside.
+  - if:
+      - condition: template
+        value_template: "{{ _morning_prog_soc != '' }}"
+    then:
+      - action: number.set_value
+        target:
+          entity_id: "{{ _morning_prog_soc }}"
+        data:
+          value: "{{ tou_soc }}"
+  - if:
+      - condition: template
+        value_template: "{{ _evening_prog_soc != '' }}"
+    then:
+      - action: number.set_value
+        target:
+          entity_id: "{{ _evening_prog_soc }}"
+        data:
+          value: "{{ tou_soc }}"
   # ── 2. Decision tree ─────────────────────────────────────────────────────────
   - choose:
       # ── 🔴 DISABLED — master switch turned off → safe mode immediately ───────
@@ -335,14 +419,14 @@ action:
                 Optimizer turned off manually.
                 Inverter set to: {{ _safe_opt }}.
                 Battery SOC: {{ battery_soc | round(0) }}%
-      # ── ☀️  SELL — in window, price above threshold, battery above reserve ────
+      # ── ☀️  SELL — in window, price above threshold, battery above sell threshold ──
       - conditions:
           - condition: template
             value_template: >
               {{ optimizer_active
                  and in_sell_window
                  and current_price > (_min_price | float(0))
-                 and battery_soc >= reserve_soc }}
+                 and battery_soc >= sell_soc_threshold }}
         sequence:
           - condition: template          # skip if already selling
             value_template: "{{ current_mode != _sell_opt }}"
@@ -358,7 +442,8 @@ action:
               title: "☀️ PV: SELLING to grid"
               message: >
                 Price: {{ current_price | round(0) }} |
-                SOC: {{ battery_soc | round(0) }}% ≥ reserve {{ reserve_soc }}% |
+                SOC: {{ battery_soc | round(0) }}% ≥ threshold {{ sell_soc_threshold }}%
+                (reserve {{ reserve_soc }}% + hysteresis {{ _hysteresis }}%) |
                 PV tomorrow: {{ tomorrow_pv }} kWh vs est. {{ tomorrow_consumption }} kWh
     # ── 🔋 CHARGE/SELF-USE — outside window, price too low, or battery below reserve
     default:
@@ -382,7 +467,8 @@ action:
             {% elif current_price <= (_min_price | float(0)) %}
             Price {{ current_price | round(0) }} below threshold {{ _min_price }} — charging battery.
             {% else %}
-            SOC {{ battery_soc | round(0) }}% < reserve {{ reserve_soc }}% — protecting battery.
+            SOC {{ battery_soc | round(0) }}% < entry threshold {{ sell_soc_threshold }}%
+            (reserve {{ reserve_soc }}% + hysteresis {{ _hysteresis }}%) — protecting battery.
             {% endif %}
             PV tomorrow: {{ tomorrow_pv }} kWh / est. consumption: {{ tomorrow_consumption }} kWh
 mode: restart

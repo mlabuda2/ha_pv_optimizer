@@ -90,7 +90,7 @@ Go to **Settings → Helpers** and create:
 |---|---|---|---|
 | `PV Optimizer — Enabled` | Toggle (input_boolean) | — | On |
 | `PV Optimizer — Tomorrow's Temperature` | Number (input_number) | −30 to 40, step 0.1 °C | 10 |
-| `PV Optimizer — Safety Buffer SOC` | Number (input_number) | 0–30, step 1 % | 10 |
+| `PV Optimizer — Safety Buffer SOC` | Number (input_number) | 0–30, step 1 % | 15 |
 | `PV Optimizer — Min SOC Before Selling` | Number (input_number) | 0–80, step 1 % | 20 |
 > **Shortcut**: copy `packages/pv_optimizer.yaml` to your `config/packages/` folder
 > and add `packages: !include_dir_named packages` to `configuration.yaml`.
@@ -113,15 +113,19 @@ Configure every field (all have sensible defaults):
 **Inverter mode options** — exact option strings from your inverter's select entity  
 **Sell windows** — default 07:00–10:00 and 19:00–23:00 (Polish RCE peak hours)  
 **Consumption model** — set `hp_coeff = 0` if no heat pump  
-**Safety buffer** — start with 10 %, increase if battery runs low  
+**Safety buffer** — start with 15 %, increase if battery runs low  
 **Notification service** — enter the suffix (e.g. `mobile_app_iphone_yourname`) or leave blank
 Save and enable.
-### Step 4 (optional) — Dashboard card
+### Step 4 (optional) — Dashboard cards
 Install [Bubble Card](https://github.com/Clooos/Bubble-Card) via HACS → Frontend.  
 Copy the YAML from `dashboards/bubble_card_example.yaml` into a manual card.  
 (Requires the `packages/pv_optimizer.yaml` template sensors.)
 
-![Bubble Card showing PV Optimizer toggle with Reserve SOC and Consumption sub-buttons](docs/images/bubble_card.png)
+For the **Next Sell Window Plan** card, copy `dashboards/pv_plan_card.yaml` into a manual
+markdown card placed below the Bubble Card. It shows a live forecast for the next sell window:
+prices, battery SOC vs. reserve & sell-entry threshold, and a colour-coded sell/no-sell verdict.
+
+![Bubble Card with PV Optimizer toggle and Next Sell Window Plan card](docs/images/bubble-card-w-plan.png)
 ---
 ## Calibration
 ### Heat pump coefficient (`hp_coeff`)
@@ -134,7 +138,7 @@ Change `number.solarman_battery_restart_soc` (or equivalent) on your inverter:
 - **Winter** (Oct–Mar): 30–40 % — HP runs harder, cloud risk higher
 The optimizer reads this number live; no other changes needed.
 ### Safety buffer
-Start at 10 %. If battery SOC hits the floor before 06:00 on cold mornings,
+Start at 15 %. If battery SOC hits the floor before 06:00 on cold mornings,
 increase by 5 % steps until it stops happening.
 ---
 ## Tested hardware
