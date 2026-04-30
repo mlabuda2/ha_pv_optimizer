@@ -86,6 +86,12 @@ template:
           {% set safety_buf   = states('input_number.pv_optimizer_safety_buffer_soc') | float(10) %}
           {% set min_soc      = states('input_number.pv_optimizer_min_soc_floor')     | float(20) %}
           {% set tomorrow_con = states('sensor.pv_optimizer_estimated_consumption_tomorrow') | float(10) %}
-          {% set gap_kwh      = [tomorrow_con - pv_tomorrow, 0] | max %}
+          {% set gap_kwh = [tomorrow_con - pv_tomorrow, 0] | max %}
+          {# overnight_gap: battery must cover sell-window-end (23:00) → sunrise (07:00),
+             no PV in that window — protects against over-draining on sunny forecast days.
+             Assumes default sell windows (23:00–07:00 = 8 h). Adjust 8 if your windows differ. #}
+          {% set overnight_h = 8 %}
+          {% set overnight_gap = tomorrow_con * overnight_h / 24 %}
+          {% set gap_kwh = [overnight_gap, gap_kwh] | max %}
           {% set reserve      = inv_floor + (gap_kwh / battery_cap * 100) + safety_buf %}
           {{ [[reserve, min_soc] | max, 95] | min | round(0) | int }}

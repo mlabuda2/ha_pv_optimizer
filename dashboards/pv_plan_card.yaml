@@ -8,9 +8,19 @@
 #   • Current battery SOC vs required reserve & sell-entry threshold
 #   • Colour-coded predicted action: 🟢 SPRZEDAŻ / 🟡 Ładowanie / 🔵 / 🔴
 #
+# Reserve SOC is computed INLINE — always matches the live automation formula:
+#   overnight_gap = tomorrow_consumption × (24 − es_end + ms_start) / 24
+#   daytime_gap   = max(0, tomorrow_consumption − tomorrow_pv)
+#   gap_kWh       = max(overnight_gap, daytime_gap)
+#   reserve_soc   = inverter_floor + gap_kWh/battery_cap×100 + safety_buffer
+#
 # Requires: sensor.rce_pse_cena (with .prices attribute list),
-#           sensor.pv_optimizer_wymagane_rezerwy_soc,
-#           sensor.solarman_battery,
+#           sensor.solarman_battery, sensor.solarman_battery_capacity,
+#           sensor.solcast_pv_forecast_prognoza_na_jutro,
+#           sensor.pv_optimizer_szacowane_zuzycie_jutro,
+#           number.solarman_battery_restart_soc,
+#           input_number.pv_optimizer_bufor_bezpieczenstwa_soc,
+#           input_number.pv_optimizer_min_soc_do_sprzedazy,
 #           input_boolean.pv_optimizer_aktywny
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -20,9 +30,22 @@ content: >
   {% set es_start = 19 %}{% set es_end = 23 %}
   {% set h = now().hour %}
   {% set batt_soc = states('sensor.solarman_battery') | float(0) | round(0) | int %}
-  {% set reserve_soc = states('sensor.pv_optimizer_wymagane_rezerwy_soc') | float(35) | round(0) | int %}
-  {% set sell_threshold = reserve_soc + 5 %}
   {% set optimizer_on = is_state('input_boolean.pv_optimizer_aktywny', 'on') %}
+
+  {# ── Reserve SOC — computed inline, mirrors live automation exactly ── #}
+  {% set tomorrow_cons = states('sensor.pv_optimizer_szacowane_zuzycie_jutro') | float(0) %}
+  {% set tomorrow_pv   = states('sensor.solcast_pv_forecast_prognoza_na_jutro') | float(0) %}
+  {% set inv_floor     = states('number.solarman_battery_restart_soc') | float(20) %}
+  {% set battery_cap   = states('sensor.solarman_battery_capacity') | float(15.9) %}
+  {% set safety_buf    = states('input_number.pv_optimizer_bufor_bezpieczenstwa_soc') | float(15) %}
+  {% set min_soc_floor = states('input_number.pv_optimizer_min_soc_do_sprzedazy') | float(20) %}
+  {% set overnight_h   = 24 - es_end + ms_start %}
+  {% set overnight_gap = tomorrow_cons * overnight_h / 24 %}
+  {% set daytime_gap   = [tomorrow_cons - tomorrow_pv, 0] | max %}
+  {% set gap_kwh       = [overnight_gap, daytime_gap] | max %}
+  {% set reserve_from_gap = inv_floor + (gap_kwh / battery_cap * 100) + safety_buf %}
+  {% set reserve_soc   = [[reserve_from_gap, min_soc_floor] | max, 95] | min | round(0) | int %}
+  {% set sell_threshold = reserve_soc + 5 %}
 
   {% set in_morning = ms_start <= h < ms_end %}
   {% set in_evening = es_start <= h < es_end %}
@@ -85,7 +108,8 @@ content: >
   ⚠️ Brak danych cenowych
   {% endif %}
 
-  🔋 SOC: **{{ batt_soc }}%** &nbsp;·&nbsp; rezerwa: {{ reserve_soc }}% &nbsp;·&nbsp; próg wejścia: {{ sell_threshold }}%
+  🔋 SOC: **{{ batt_soc }}%** &nbsp;·&nbsp; rezerwa: **{{ reserve_soc }}%** &nbsp;·&nbsp; próg wejścia: **{{ sell_threshold }}%**
+  📉 Jutro — zużycie: {{ tomorrow_cons | round(1) }} kWh &nbsp;·&nbsp; PV: {{ tomorrow_pv | round(1) }} kWh &nbsp;·&nbsp; nocna rezerwa: {{ overnight_gap | round(1) }} kWh
 
   ---
 
@@ -95,4 +119,3 @@ content: >
   {% elif batt_soc < sell_threshold %}🟡 **Ładowanie** — SOC {{ batt_soc }}% < próg {{ sell_threshold }}%
   {% else %}🟢 **SPRZEDAŻ do sieci** — śr. {{ avg }} PLN/MWh
   {% endif %}
-

@@ -28,14 +28,19 @@ every 15 min →  [Blueprint 2] read price sensor, battery SOC, PV forecast
 ```
 ### Reserve SOC formula
 ```
-gap_kWh  = max(0, tomorrow_consumption − tomorrow_pv_forecast)
-reserve  = inverter_floor + (gap_kWh / battery_capacity × 100) + safety_buffer
-reserve  = clamp(reserve, min_soc_floor, 95)
+overnight_fraction = (24 − evening_sell_end + morning_sell_start) / 24
+overnight_gap = tomorrow_consumption × overnight_fraction   ← no PV overnight
+daytime_gap   = max(0, tomorrow_consumption − tomorrow_pv_forecast)
+gap_kWh       = max(overnight_gap, daytime_gap)
+reserve       = inverter_floor + (gap_kWh / battery_capacity × 100) + safety_buffer
+reserve       = clamp(reserve, min_soc_floor, 95)
 ```
-The inverter never drains below its hardware floor (`inverter_floor`).  
-Only energy **above** that floor is realistically usable overnight.  
-Adding `inverter_floor` into the formula ensures the reserve SOC correctly
-reflects where the battery will sit after covering the overnight gap.
+`overnight_gap` ensures the battery always retains enough charge to cover the period from
+sell-window end (e.g. 23:00) through to sunrise — **even on sunny forecast days** when
+full-day PV > full-day consumption, which would otherwise make `daytime_gap = 0` and leave
+only the safety buffer as protection.
+`daytime_gap` dominates in winter / cloudy days when PV is insufficient for the full day.
+The formula automatically picks whichever gap is larger.
 ### Consumption model
 ```
 daily_consumption = base_load + hp_coeff × max(0, balance_point − temp_effective)
@@ -140,6 +145,11 @@ The optimizer reads this number live; no other changes needed.
 ### Safety buffer
 Start at 15 %. If battery SOC hits the floor before 06:00 on cold mornings,
 increase by 5 % steps until it stops happening.
+
+> **Tip — sunny spring/summer days**: if the battery drains to the inverter floor overnight
+> even with a sunny forecast, it means overnight consumption exceeds the safety margin.
+> The reserved `overnight_gap` (sell-window-end → sunrise) should cover this automatically;
+> if it still happens, raise `safety_buffer_soc` by 5 %.
 ---
 ## Tested hardware
 | Component | Integration | Entity example |

@@ -12,9 +12,14 @@ blueprint:
       Time-of-Use programme SOC registers so the hardware floor always matches HA logic
     **Reserve SOC formula**:
     ```
-    reserve = inverter_floor + (gap_kWh / battery_capacity × 100) + safety_buffer
+    overnight_fraction = (24 − evening_sell_end + morning_sell_start) / 24
+    overnight_gap = tomorrow_consumption × overnight_fraction
+    daytime_gap   = max(0, tomorrow_consumption − tomorrow_pv_forecast)
+    gap_kWh       = max(overnight_gap, daytime_gap)
+    reserve       = inverter_floor + (gap_kWh / battery_capacity × 100) + safety_buffer
     ```
-    where `gap_kWh = max(0, tomorrow_consumption − tomorrow_pv_forecast)`.
+    `overnight_gap` ensures the battery always covers the sell-window-end → sunrise period
+    even on sunny days when full-day PV exceeds full-day consumption.
     **Consumption model** (linear heat-pump model, calibrated from real Daikin data):
     ```
     consumption = base_load + hp_coeff × max(0, balance_point − temp_effective)
@@ -357,7 +362,14 @@ action:
         {% set heating_demand = [_balance_pt - temp_effective, 0] | max %}
         {{ (_base_load + _hp_coeff * heating_demand) | round(1) }}
       # Dynamic reserve SOC (clamped 0–95 %)
-      gap_kwh: "{{ [tomorrow_consumption - tomorrow_pv, 0] | max }}"
+      # overnight_gap: energy the battery MUST cover from sell-window-end → sunrise (no PV)
+      # daytime_gap:   classic full-day shortfall (dominates in winter/cloudy days)
+      # gap_kwh is the larger of the two — protects against both scenarios.
+      overnight_gap: >
+        {% set overnight_h = 24 - (_es_end | int) + (_ms_start | int) %}
+        {{ (tomorrow_consumption * overnight_h / 24) | round(2) }}
+      daytime_gap: "{{ [tomorrow_consumption - tomorrow_pv, 0] | max | round(2) }}"
+      gap_kwh: "{{ [overnight_gap, daytime_gap] | max | round(2) }}"
       reserve_from_gap: "{{ inverter_floor + (gap_kwh / battery_cap * 100) + _sbuf }}"
       reserve_soc: "{{ [[reserve_from_gap, _min_soc] | max, 95] | min | round(0) | int }}"
       # Sell entry threshold with hysteresis: requires reserve_soc + hysteresis to START selling,
